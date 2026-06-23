@@ -9,8 +9,8 @@ Predicts the outcome of any 2026 World Cup match — win / draw / loss probabili
 ## Quick Start
 
 ```bash
-git clone https://github.com/Rogue-says/world_cup_predictions.git
-cd world_cup_predictions
+git clone https://github.com/Rogue-says/World-Cup-Predictions.git
+cd World-Cup-Predictions
 pip install -r requirements.txt
 ```
 
