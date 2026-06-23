@@ -1,0 +1,17 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# generated predictions + charts
+predictions/
+
+# auto-downloaded on first run (large, ~5MB)
+data_cache/
+
+# API keys (never commit this)
+.env
+
+# os junk
+.DS_Store
