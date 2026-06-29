@@ -2,3 +2,9 @@
 cd "$(dirname "$0")"
 source venv/bin/activate
 python predict_today.py "$@"
+
+example - 
+cd
+locate your file  cd your folder pck
+source venv/bin/activate
+python predict_today.py "Brazil" "Japan"
