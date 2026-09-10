@@ -19,10 +19,12 @@ API Status (tested):
 """
 
 import os
+import math
+from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / '.env')
 
 # API Keys
 RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY")
@@ -267,46 +269,38 @@ def get_odds(sport="soccer_fifa_world_cup", region="eu", markets="h2h"):
 
 
 def get_match_odds(home_team, away_team, odds_data):
-    """Extract odds for a specific match from odds data."""
-    if not odds_data:
-        return None
-    
-    for game in odds_data:
-        ht = game.get("home_team", "")
-        at = game.get("away_team", "")
-        if (home_team in ht or ht in home_team) and (away_team in at or at in away_team):
-            bookmakers = game.get("bookmakers", [])
-            if bookmakers:
-                markets = bookmakers[0].get("markets", [])
-                for market in markets:
-                    if market.get("key") == "h2h":
-                        outcomes = market.get("outcomes", [])
-                        odds = {}
-                        for outcome in outcomes:
-                            name = outcome.get("name")
-                            price = outcome.get("price")
-                            if name == ht:
-                                odds["home"] = price
-                            elif name == at:
-                                odds["away"] = price
-                            elif name == "Draw":
-                                odds["draw"] = price
-                        if odds:
-                            return odds
+    """Match both orientations exactly; never match empty names or substrings."""
+    def key(name):
+        aliases = {'usa': 'united states', 'korea republic': 'south korea', 'türkiye': 'turkey', 'cape verde': 'cabo verde'}
+        value = str(name).strip().casefold()
+        return aliases.get(value, value)
+    if not key(home_team) or not key(away_team): return None
+    for game in odds_data or []:
+        ht, at = game.get('home_team', ''), game.get('away_team', '')
+        forward = (key(home_team), key(away_team)) == (key(ht), key(at))
+        reverse = (key(home_team), key(away_team)) == (key(at), key(ht))
+        if not (forward or reverse): continue
+        candidates = []
+        for bookmaker in game.get('bookmakers', []):
+            for market in bookmaker.get('markets', []):
+                if market.get('key') != 'h2h': continue
+                values = {key(o.get('name', '')): o.get('price') for o in market.get('outcomes', [])}
+                odds = {'home': values.get(key(home_team)), 'away': values.get(key(away_team)), 'draw': values.get('draw')}
+                if odds_to_implied_probs(odds): candidates.append(odds)
+        if candidates:
+            # Average available decimal prices; do not silently pick the first bookmaker.
+            return {side: sum(o[side] for o in candidates) / len(candidates) for side in ('home', 'draw', 'away')}
     return None
 
 
 def odds_to_implied_probs(odds):
-    """Convert decimal odds to implied probabilities."""
-    if not odds or not all(k in odds for k in ["home", "draw", "away"]):
+    if not odds: return None
+    values = [odds.get(side) for side in ('home', 'draw', 'away')]
+    if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 1 for v in values):
         return None
-    
-    total = (1/odds["home"]) + (1/odds["draw"]) + (1/odds["away"])
-    return {
-        "home": (1/odds["home"]) / total,
-        "draw": (1/odds["draw"]) / total,
-        "away": (1/odds["away"]) / total
-    }
+    inverse = [1 / v for v in values]
+    total = sum(inverse)
+    return dict(zip(('home', 'draw', 'away'), [v / total for v in inverse]))
 
 
 # ── xG via API-Football match statistics ─────────────────────────────────────
@@ -430,3 +424,4 @@ def print_api_status():
         print(f"  The Odds API key: NOT SET (get FREE key at https://the-odds-api.com)")
     
     print("================================\n")
+

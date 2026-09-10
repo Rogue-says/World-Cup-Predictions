@@ -1,144 +1,75 @@
 # World Cup Predictions
 
-Predicts the outcome of any 2026 World Cup match — win / draw / loss probabilities, full squad data, live betting odds, plus a chart you can post. You give it two teams, it does the rest.
+An experimental Python football outcome model using historical Elo, recent form, head-to-head results and rest days. It outputs win/draw/loss probabilities and a chart. Optional current bookmaker odds can be blended with the model for current or future matchups.
 
-**Two ways to use:**
-1. **CSV Mode (no API keys)** — Run instantly with historical data only
-2. **API Mode (free keys)** — Adds live odds + squad data for better predictions
+## Install and run
 
-## Quick Start
+Requires Python 3.10+.
 
 ```bash
 git clone https://github.com/Rogue-says/World-Cup-Predictions.git
 cd World-Cup-Predictions
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+python predict_today.py Portugal Uzbekistan --date 2026-06-23
 ```
 
-**Option 1: CSV Mode (works immediately, no API keys needed)**
+The date above is an explicit prediction cutoff, not a claim that a verified fixture is bundled. The model assumes a neutral venue and World Cup tournament weighting for custom matchups.
+
+On the first online run, historical results are downloaded from [martj42/international_results](https://github.com/martj42/international_results) into `data_cache/results.csv`. Internet access is required for that download. Subsequent runs reuse the cache.
+
 ```bash
-python predict_today.py "Portugal" "Uzbekistan"
+# Refresh the cached results, validating before replacement:
+python predict_today.py Brazil Japan --date 2026-09-10 --refresh-data
+# No network access; requires an existing results CSV:
+python predict_today.py Portugal Uzbekistan --date 2026-06-23 --offline
+# Bash launcher selects .venv, venv, or system python3:
+./wc Portugal Uzbekistan --date 2026-06-23 --offline
 ```
 
-**Option 2: API Mode (better predictions, free API keys required)**
+There is no bundled `fixtures.csv`. Provide `--date`, or supply `data_cache/fixtures.csv` with `teams` (for example `Portugal v Uzbekistan`) and `date_dt` (`YYYY-MM-DD`). Optional columns: `match_number`, `group`, `stadium`. Without a date or matching fixture, the program exits with an actionable error.
+
+Charts are written beneath `predictions/<date>/`, relative to the repository rather than your shell's current directory.
+
+## What changed
+
+- Historical results are filtered **before all feature construction**, including final Elo. Later matches can no longer leak into a historical prediction's ratings.
+- The model uses only features with historical training values. Live xG, injuries and odds are not fed into columns that contained only zeros during training.
+- Current odds and squads are not requested for past dates. Historical evaluation cannot legitimately use today's API response as a past snapshot.
+- Bookmaker matching supports reversed home/away order, requires complete valid decimal prices, avoids empty/substring matches, and averages available bookmaker prices.
+- Removed interactive first-run key prompts and the launcher's stray example commands.
+- Added clear CLI validation, offline behavior and a cache refresh option.
+
+## Optional APIs
+
+Copy `.env.example` to `.env` and populate only the services you need:
+
+- `ODDS_API_KEY`: The Odds API for current three-way market prices.
+- `API_FOOTBALL_KEY` or `RAPIDAPI_KEY`: API-Football squad lookup.
+
+Other helper integrations remain in `api_config.py`; they are not all used by the main predictor. Missing keys or failed optional API requests fall back to model-only output. API quotas and coverage depend on your provider account; no free-tier availability is guaranteed here. Keys are loaded from the repository's `.env`, which must stay untracked.
+
+## Model and evaluation
+
+XGBoost trains on matches from 2006 up to the fixed validation boundary in 2023. Validation uses matches from that boundary up to the requested prediction cutoff and controls early stopping. The printed validation score is **not an untouched test-set estimate**, because early stopping used that window. Both partitions must have enough data, and the training partition must contain all three outcomes.
+
+The model averages predictions in both team orientations. When eligible live odds exist, a heuristic blend gives the model 50–70% weight. A draw-threshold heuristic may choose a draw even when it is not the largest probability. Neither heuristic is proven calibration.
+
+Do not treat old README accuracy claims or example percentages as verified performance for this revision. Run an independent chronological evaluation and retain its data snapshot before making performance claims. Backtesting code exists in `backtest.py`:
+
 ```bash
-# Add your free API keys to .env file first
-python predict_today.py "Portugal" "Uzbekistan"
+python backtest.py --help
 ```
 
-Works on Windows, Mac, Linux. No Docker, no special setup.
+Historical results may include extra-time scores; this dataset is not guaranteed to match regulation-time betting settlement. Predictions do not model injuries, tactics, lineups, player xG or all home-host advantages. Probability is not betting certainty.
 
-## Sample Output
+## Tests
 
-```
-┌─── PORTUGAL SQUAD (26 players) ─────────────────────────────┐
-│  Goalkeepers:
-│    #1   Diogo Costa               Age: 26
-│  Attackers:
-│    #7   Cristiano Ronaldo         Age: 41
-└──────────────────────────────────────────────────────────────┘
-
-============================================================
-  Portugal vs Uzbekistan
-  2026-06-23  ·  Group K  ·  Houston Stadium
-============================================================
-  Portugal               win    78.6%
-  Draw                          14.0%
-  Uzbekistan             win     7.4%
-------------------------------------------------------------
-  PICK: Portugal  (78.6%)   [LOCK]
-============================================================
+```bash
+python -m unittest discover -s tests -v
 ```
 
-## How It Works
+The deterministic suite verifies reversed odds, malformed market data, invariance to future results, feature consistency, and a synthetic training/prediction cycle. CI runs these tests without API keys. Synthetic smoke tests verify operation, not predictive quality.
 
-The model combines historical CSV data with live API data:
-
-### From CSV Data (always works, no API needed)
-- **Elo ratings.** Computed from every international result since 2006. Each team starts at 1500 and trades points after every game.
-- **Recent form.** Win rate and goal difference over last 5 and 10 matches.
-- **Head-to-head.** Historical record between the two teams.
-- **Rest days.** How long since each team last played.
-
-### From Free APIs (optional, enhances prediction)
-- **Live betting odds** from 25+ bookmakers (blended 65% with model)
-- **Full squad data** — player names, positions, jersey numbers, age
-
-### The Model
-An **XGBoost** classifier trained on matches before the prediction date. On validation data it achieves **60% accuracy** (log-loss 0.86 vs 1.05 baseline).
-
-## Free API Keys (Optional)
-
-**Important: Each user must get their own API keys.** The prediction works without any API keys. Adding free keys gives you live odds and squad data.
-
-### The Odds API (Recommended)
-Get live betting odds from 25+ bookmakers.
-1. Go to https://the-odds-api.com
-2. Sign up (free, no credit card)
-3. Copy your API key
-4. Add to `.env`: `ODDS_API_KEY=your_key_here`
-5. Free tier: 500 requests/month
-
-### API-Football
-Get squad data, lineups, injuries, and match stats.
-1. Go to https://dashboard.api-football.com/register
-2. Sign up (free, no credit card)
-3. Go to Account → My Access
-4. Copy your API key
-5. Add to `.env`: `API_FOOTBALL_KEY=your_key_here`
-6. Free tier: 100 requests/day
-
-### The Rundown
-Live scores and events.
-1. Go to https://therundown.io/api
-2. Sign up and get your API key
-3. Add to `.env`: `THERUNDOWN_KEY=your_key_here`
-
-## Rate Limits
-
-If you hit API rate limits, the predictor automatically falls back to CSV-only mode:
-
-| Mode | API Keys Needed | What You Get | Prediction |
-|------|----------------|--------------|------------|
-| **CSV Mode** | None | Historical data only | ~70% confidence |
-| **API Mode** | Free keys | Squads + live odds + blended | ~78% confidence |
-
-CSV mode never breaks, never errors out.
-
-## API Configuration
-
-Edit the `.env` file to add your keys:
-
-```
-ODDS_API_KEY=your_key_here
-API_FOOTBALL_KEY=your_key_here
-THERUNDOWN_KEY=your_key_here
-```
-
-Leave a key blank to disable that API.
-
-## Project Structure
-
-```
-├── predict_today.py   # Main script
-├── api_config.py      # API integrations
-├── data_cache/        # Historical CSV data
-├── .env               # Your API keys
-├── requirements.txt   # Python dependencies
-├── predictions/       # Output charts
-└── venv/              # Virtual environment
-```
-
-## What It Doesn't Do
-
-- No injuries or suspensions (API-Football paid plan needed)
-- No expected goals (xG) — the stat that moves modern soccer models
-- No lineups or tactics before match
-- Draws are under-predicted (like most models)
-
-## Data
-
-Historical results from [martj42/international_results](https://github.com/martj42/international_results). Fixtures are the official 2026 schedule.
-
-## License
-
-MIT — do whatever you want with it.
+MIT license; see [LICENSE](LICENSE).

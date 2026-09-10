@@ -20,6 +20,8 @@ It prints the win / draw / win probabilities, the pick, and a tag
 """
 
 import os
+import argparse
+from pathlib import Path
 import sys
 import warnings
 import numpy as np
@@ -37,9 +39,10 @@ from api_config import (
     print_api_status, API_FOOTBALL_KEY, RAPIDAPI_KEY
 )
 
-warnings.filterwarnings("ignore")
 
-CACHE_DIR = "data_cache"
+
+ROOT = Path(__file__).resolve().parent
+CACHE_DIR = str(ROOT / "data_cache")
 RESULTS_URL = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
 FIXTURES_PATH = os.path.join(CACHE_DIR, "fixtures.csv")
 
@@ -65,9 +68,6 @@ FEATURES = [
     "home_win5", "away_win5", "home_gd5", "away_gd5",
     "home_win10", "away_win10", "home_rest_days", "away_rest_days",
     "h2h_n", "h2h_home_winrate", "h2h_home_gd",
-    "odds_home_implied", "odds_draw_implied", "odds_away_implied",
-    "home_xg_for", "away_xg_for", "home_xg_against", "away_xg_against",
-    "home_injuries_count", "away_injuries_count"
 ]
 
 TRAIN_START = "2006-01-01"
@@ -246,6 +246,10 @@ def class_sample_weights(labels):
 
 
 def train_model(train, val):
+    if train.empty or val.empty:
+        raise ValueError('Not enough historical data for separate training and validation windows')
+    if set(train['label'].astype(int)) != {0, 1, 2}:
+        raise ValueError('Training data must contain home wins, draws and away wins')
     X_train, y_train = train[FEATURES].astype(float), train["label"].astype(int)
     X_val, y_val = val[FEATURES].astype(float), val["label"].astype(int)
     # Pass sample weights so draws get equal attention during training
@@ -266,7 +270,7 @@ def evaluate(model, X_val, y_val):
     pred = proba.argmax(axis=1)
     base = np.tile(np.bincount(y_val, minlength=3) / len(y_val), (len(y_val), 1))
     print(f"  Validation accuracy : {accuracy_score(y_val, pred):.3f}")
-    print(f"  Validation log-loss : {log_loss(y_val, proba):.3f}  (baseline {log_loss(y_val, base, labels=[0,1,2]):.3f})")
+    print(f"  Validation log-loss : {log_loss(y_val, proba, labels=[0,1,2]):.3f}  (baseline {log_loss(y_val, base, labels=[0,1,2]):.3f})")
 
 
 # ── prediction helpers ──────────────────────────────────────────────────────────
@@ -298,41 +302,6 @@ def build_match_row(long, final_elo, home, away, neutral, weight, asof, match_od
     he, ae = final_elo.get(home, ELO_BASE), final_elo.get(away, ELO_BASE)
     n, wr, gd = h2h_as_of(long, home, away, asof)
 
-    # Default values — used when API data is unavailable
-    odds_home_imp, odds_draw_imp, odds_away_imp = 0.33, 0.33, 0.33
-    home_xg_for, away_xg_for = 1.5, 1.5
-    home_xg_against, away_xg_against = 1.0, 1.0
-    home_injuries, away_injuries = 0, 0
-
-    # Apply pre-fetched odds (avoids double-fetching — bug fix)
-    if match_odds:
-        implied = odds_to_implied_probs(match_odds)
-        if implied:
-            odds_home_imp = implied["home"]
-            odds_draw_imp = implied["draw"]
-            odds_away_imp = implied["away"]
-
-    # Fetch xG and injuries from API-Football if a key is available
-    if API_FOOTBALL_KEY:
-        home_team_id = get_team_id_api_football(home)
-        away_team_id = get_team_id_api_football(away)
-
-        if home_team_id:
-            home_xg_data = get_xg_api_football(home_team_id)
-            if home_xg_data:
-                home_xg_for = home_xg_data["xg_for"]
-                home_xg_against = home_xg_data["xg_against"]
-            home_injury_data = get_injuries_api_football(home_team_id)
-            home_injuries = len(home_injury_data) if home_injury_data else 0
-
-        if away_team_id:
-            away_xg_data = get_xg_api_football(away_team_id)
-            if away_xg_data:
-                away_xg_for = away_xg_data["xg_for"]
-                away_xg_against = away_xg_data["xg_against"]
-            away_injury_data = get_injuries_api_football(away_team_id)
-            away_injuries = len(away_injury_data) if away_injury_data else 0
-
     row = {
         "neutral": int(neutral), "tournament_weight": weight,
         "home_elo": he, "away_elo": ae, "elo_diff": he - ae,
@@ -341,11 +310,7 @@ def build_match_row(long, final_elo, home, away, neutral, weight, asof, match_od
         "home_win10": hf["win10"], "away_win10": af["win10"],
         "home_rest_days": hf["rest_days"], "away_rest_days": af["rest_days"],
         "h2h_n": n, "h2h_home_winrate": wr, "h2h_home_gd": gd,
-        "odds_home_implied": odds_home_imp, "odds_draw_implied": odds_draw_imp,
-        "odds_away_implied": odds_away_imp,
-        "home_xg_for": home_xg_for, "away_xg_for": away_xg_for,
-        "home_xg_against": home_xg_against, "away_xg_against": away_xg_against,
-        "home_injuries_count": home_injuries, "away_injuries_count": away_injuries
+
     }
     return pd.DataFrame([row])[FEATURES].astype(float)
 
@@ -430,6 +395,8 @@ def _side_matches(user_input, raw_name):
 
 def find_fixture(team_a, team_b):
     """Find the single fixture for the two named teams (order doesn't matter)."""
+    if not os.path.exists(FIXTURES_PATH):
+        return None
     fx = pd.read_csv(FIXTURES_PATH)
     for _, row in fx.iterrows():
         if " v " not in str(row["teams"]):
@@ -446,6 +413,8 @@ def find_fixture(team_a, team_b):
 
 
 def list_team_names():
+    if not os.path.exists(FIXTURES_PATH):
+        return []
     fx = pd.read_csv(FIXTURES_PATH)
     names = set()
     for t in fx["teams"]:
@@ -548,175 +517,89 @@ def tag_match(top_prob, p_home, p_away, home_elo, away_elo):
     fav_elo_is_home = home_elo >= away_elo
     upset = (favorite_is_home != fav_elo_is_home)
     if top_prob >= 0.60:
-        strength = "LOCK"
+        strength = "MODEL_FAVORITE"
     elif top_prob >= 0.45:
-        strength = "LEAN"
+        strength = "MODEL_LEAN"
     else:
         strength = "TOSS-UP"
     return strength + ("  ⚠️ UPSET PICK" if upset else "")
 
 
 # ── main ────────────────────────────────────────────────────────────────────────
-def get_teams_from_args():
-    """Two team names from the command line, or ask for them interactively."""
-    if len(sys.argv) >= 3:
-        return sys.argv[1], sys.argv[2]
-    print("Enter the two teams to predict (e.g. Saudi Arabia / Uruguay).")
-    a = input("  Team 1: ").strip()
-    b = input("  Team 2: ").strip()
-    return a, b
-
-
-def setup_api_keys():
-    """Check if API keys are configured. If not, offer to set them up."""
-    env_path = os.path.join(os.path.dirname(__file__), ".env")
-    
-    # Check if keys are already configured by reading .env directly
-    odds_configured = False
-    football_configured = False
-    
-    if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            for line in f:
-                if line.startswith("ODDS_API_KEY=") and "=" in line:
-                    val = line.split("=", 1)[1].strip()
-                    if val and not val.startswith("YOUR_"):
-                        odds_configured = True
-                if line.startswith("API_FOOTBALL_KEY=") and "=" in line:
-                    val = line.split("=", 1)[1].strip()
-                    if val and not val.startswith("YOUR_"):
-                        football_configured = True
-    
-    if odds_configured and football_configured:
-        return
-    
-    print("\n" + "=" * 60)
-    print("  FIRST RUN — API SETUP (optional)")
-    print("=" * 60)
-    print("\n  World Cup Predictions works without API keys, but adding free keys")
-    print("  gives you live betting odds and squad data.\n")
-    print("  You can skip this and add keys later in the .env file.\n")
-    
-    setup = input("  Set up API keys now? (y/n): ").strip().lower()
-    if setup != "y":
-        print("\n  Skipping. You can add keys later in the .env file.\n")
-        return
-    
-    # Read existing .env
-    env_lines = []
-    if os.path.exists(env_path):
-        with open(env_path, "r") as f:
-            env_lines = f.readlines()
-    
-    # Odds API
-    print("\n  --- The Odds API (free at https://the-odds-api.com) ---")
-    print("  Get your free key: 500 requests/month")
-    odds_key = input("  Enter ODDS_API_KEY (or press Enter to skip): ").strip()
-    
-    # API-Football
-    print("\n  --- API-Football (free at https://dashboard.api-football.com) ---")
-    print("  Get your free key: 100 requests/day")
-    football_key = input("  Enter API_FOOTBALL_KEY (or press Enter to skip): ").strip()
-    
-    # The Rundown
-    print("\n  --- The Rundown (free at https://therundown.io/api) ---")
-    rundown_key = input("  Enter THERUNDOWN_KEY (or press Enter to skip): ").strip()
-    
-    # Update .env file
-    new_lines = []
-    for line in env_lines:
-        if line.startswith("ODDS_API_KEY=") and odds_key:
-            new_lines.append(f"ODDS_API_KEY={odds_key}\n")
-        elif line.startswith("API_FOOTBALL_KEY=") and football_key:
-            new_lines.append(f"API_FOOTBALL_KEY={football_key}\n")
-        elif line.startswith("THERUNDOWN_KEY=") and rundown_key:
-            new_lines.append(f"THERUNDOWN_KEY={rundown_key}\n")
-        else:
-            new_lines.append(line)
-    
-    # Add keys if not found in existing lines
-    if odds_key and not any(l.startswith("ODDS_API_KEY=") for l in new_lines):
-        new_lines.append(f"ODDS_API_KEY={odds_key}\n")
-    if football_key and not any(l.startswith("API_FOOTBALL_KEY=") for l in new_lines):
-        new_lines.append(f"API_FOOTBALL_KEY={football_key}\n")
-    if rundown_key and not any(l.startswith("THERUNDOWN_KEY=") for l in new_lines):
-        new_lines.append(f"THERUNDOWN_KEY={rundown_key}\n")
-    
-    with open(env_path, "w") as f:
-        f.writelines(new_lines)
-    
-    print("\n  ✓ API keys saved to .env file")
-    print("  Restart the tool to use them.\n")
+def history_before(results, cutoff):
+    """Filter before feature construction, including final Elo, to avoid future leakage."""
+    return results.loc[results['date'] < pd.Timestamp(cutoff)].copy()
 
 
 def main():
-    # Check for API keys on first run
-    setup_api_keys()
-    
-    team_a, team_b = get_teams_from_args()
-
-    print("\nLoading data + building features ...")
-    results = load_results()
-    dataset, final_elo = build_dataset(results)
-    valid_teams = set(results["home_team"]) | set(results["away_team"])
-    long = per_team_long(results)
-
-    m = find_fixture(team_a, team_b)
+    parser = argparse.ArgumentParser(description='Historical football outcome model (experimental).')
+    parser.add_argument('home', help='First national team')
+    parser.add_argument('away', help='Second national team')
+    parser.add_argument('--date', help='Prediction cutoff YYYY-MM-DD; required when no fixture is available')
+    parser.add_argument('--offline', action='store_true', help='Use cached results and no external APIs')
+    parser.add_argument('--refresh-data', action='store_true', help='Download a fresh results CSV')
+    args = parser.parse_args()
+    if args.offline and args.refresh_data:
+        parser.error('--offline and --refresh-data cannot be combined')
+    team_a, team_b = normalize_country(args.home), normalize_country(args.away)
+    if team_a.casefold() == team_b.casefold():
+        parser.error('Choose two different teams')
+    m = find_fixture(team_a, team_b) if not args.date else None
+    if args.date:
+        try:
+            cutoff = pd.Timestamp(args.date)
+            if str(cutoff.date()) != args.date: raise ValueError()
+        except Exception:
+            parser.error('--date must use YYYY-MM-DD')
+        m = {'home': team_a, 'away': team_b, 'home_disp': team_a, 'away_disp': team_b,
+             'date': args.date, 'group': 'Custom matchup', 'stadium': 'Neutral venue assumption', 'match': ''}
     if m is None:
-        print(f"\n  Couldn't find a World Cup match between '{team_a}' and '{team_b}'.")
-        print("  Check spelling. Teams in the tournament:")
-        print("   " + ", ".join(list_team_names()))
-        return
-    if m["home"] not in valid_teams or m["away"] not in valid_teams:
-        print(f"\n  That match isn't predictable yet (a team is still a placeholder, e.g. a knockout slot).")
-        return
-
-    match_date = m["date"]
-    print(f"Training model (data up to {match_date} ...")
-    train, val = split_by_date(dataset, TRAIN_START, VAL_START, match_date)
-    model, X_val, y_val = train_model(train, val)
-
-    # Show API status and fetch live data
-    print_api_status()
-    print("Fetching live betting odds ...")
-    odds_data = get_odds()
-    
-    # Fetch squad data
-    home_squad = get_squad(m["home"])
-    away_squad = get_squad(m["away"])
-    
-    # Print squads
-    if home_squad:
-        print_squad(m["home_disp"], home_squad)
-    if away_squad:
-        print_squad(m["away_disp"], away_squad)
-    
-    p_home, p_draw, p_away = predict_symmetric(
-        model, long, final_elo, m["home"], m["away"], match_date, 
-        MATCH_NEUTRAL, MATCH_WEIGHT, odds_data)
-    outcomes = [(m["home_disp"], p_home), ("Draw", p_draw), (m["away_disp"], p_away)]
-    pred_idx = calibrated_pick(p_home, p_draw, p_away)
-    pick, conf = outcomes[pred_idx]
-    he, ae = final_elo.get(m["home"], ELO_BASE), final_elo.get(m["away"], ELO_BASE)
-    tag = tag_match(conf, p_home, p_away, he, ae)
-
-    out_dir = os.path.join("predictions", str(match_date))
-    os.makedirs(out_dir, exist_ok=True)
-    chart = make_chart(m, p_home, p_draw, p_away, match_date, out_dir, odds_data)
-
-    # print the single result
-    print("\n" + "=" * 60)
-    print(f"  {m['home_disp']} vs {m['away_disp']}")
-    print(f"  {match_date}  ·  {m['group']}  ·  {m['stadium']}")
-    print("=" * 60)
-    print(f"  {m['home_disp']:<22} win   {p_home*100:>5.1f}%")
-    print(f"  {'Draw':<22}       {p_draw*100:>5.1f}%")
-    print(f"  {m['away_disp']:<22} win   {p_away*100:>5.1f}%")
-    print("-" * 60)
-    print(f"  PICK: {pick}  ({conf*100:.1f}%)   [{tag}]")
-    print("=" * 60)
-    print(f"  Chart saved -> {chart}\n")
+        parser.error('No fixture found. Use --date YYYY-MM-DD or supply data_cache/fixtures.csv.')
+    if args.offline and not (Path(CACHE_DIR) / 'results.csv').exists():
+        parser.error('Offline mode requires data_cache/results.csv. Run once online or provide the CSV.')
+    try:
+        if args.refresh_data:
+            # Validate before replacing an existing cache.
+            import io
+            response = requests.get(RESULTS_URL, timeout=60)
+            response.raise_for_status()
+            data = pd.read_csv(io.BytesIO(response.content))
+            required = {'date', 'home_team', 'away_team', 'home_score', 'away_score', 'tournament', 'neutral'}
+            if not required.issubset(data.columns): raise ValueError('Results CSV has missing columns')
+            Path(CACHE_DIR).mkdir(exist_ok=True)
+            temporary = Path(CACHE_DIR) / 'results.tmp'
+            temporary.write_bytes(response.content)
+            temporary.replace(Path(CACHE_DIR) / 'results.csv')
+        results = history_before(load_results(), m['date'])
+        valid = {name.casefold(): name for name in set(results.home_team) | set(results.away_team)}
+        for side in ('home', 'away'):
+            if m[side].casefold() not in valid: raise ValueError(f"Unknown team before cutoff: {m[side]}")
+            m[side] = valid[m[side].casefold()]
+        dataset, final_elo = build_dataset(results)
+        long = per_team_long(results)
+        train, val = split_by_date(dataset, TRAIN_START, VAL_START, m['date'])
+        model, X_val, y_val = train_model(train, val)
+        evaluate(model, X_val, y_val)
+        # Current API data cannot reconstruct a historical pre-match snapshot.
+        live = not args.offline and pd.Timestamp(m['date']).date() >= pd.Timestamp.now(tz='UTC').date()
+        odds_data = get_odds() if live else None
+        if live:
+            for side in ('home', 'away'):
+                squad = get_squad(m[side])
+                if squad: print_squad(m[side], squad)
+        p_home, p_draw, p_away = predict_symmetric(model, long, final_elo, m['home'], m['away'],
+                                                  m['date'], MATCH_NEUTRAL, MATCH_WEIGHT, odds_data)
+        outcomes = [(m['home'], p_home), ('Draw', p_draw), (m['away'], p_away)]
+        pick, confidence = outcomes[calibrated_pick(p_home, p_draw, p_away)]
+        out_dir = ROOT / 'predictions' / m['date']
+        out_dir.mkdir(parents=True, exist_ok=True)
+        chart = make_chart(m, p_home, p_draw, p_away, m['date'], str(out_dir), odds_data)
+        for name, probability in outcomes: print(f'{name}: {probability:.1%}')
+        print(f'Heuristic pick: {pick} ({confidence:.1%}); these probabilities are not a guarantee.')
+        print(f'Chart saved: {chart}')
+    except (ValueError, OSError, requests.RequestException) as exc:
+        parser.exit(1, f'Error: {exc}\n')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

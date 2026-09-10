@@ -1,10 +1,10 @@
-#!/bin/bash
-cd "$(dirname "$0")"
-source venv/bin/activate
-python predict_today.py "$@"
-
-example - 
-cd
-locate your file  cd your folder pck
-source venv/bin/activate
-python predict_today.py "Brazil" "Japan"
+#!/usr/bin/env bash
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+if [[ -x .venv/bin/python ]]; then
+  exec .venv/bin/python predict_today.py "$@"
+elif [[ -x venv/bin/python ]]; then
+  exec venv/bin/python predict_today.py "$@"
+else
+  exec python3 predict_today.py "$@"
+fi
