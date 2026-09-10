@@ -130,7 +130,7 @@ def run_backtest(val_start, val_end, tournament_filter=None, retrain_every=50):
         match_date = row["date"]
 
         # Retrain periodically (not every match — too slow for thousands of games)
-        if idx - model_trained_at >= retrain_every:
+        if model is None or idx - model_trained_at >= retrain_every:
             model = train_on_cutoff(dataset, match_date)
             model_trained_at = idx
             if model is None:
@@ -343,3 +343,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
